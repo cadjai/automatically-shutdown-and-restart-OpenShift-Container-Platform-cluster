@@ -119,7 +119,7 @@
             hour: "{{ cron_job_runtime_hour }}"
             user: "{{ cron_job_runtime_user | default('root') }}"
             job: "{{ cron_command_list | join('; ') }}"
-            cron_file: shutdown-ocp-instances-for-cluster-{{ cluster_name.stdout }}
+            cron_file: shutdown_ocp_instances_for_cluster_{{ cluster_name.stdout | replace('-', '_') }} 
             state: present 
           when:
             - setup_cron_job | bool

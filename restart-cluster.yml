@@ -127,7 +127,7 @@
         hour: "{{ cron_job_runtime_hour }}"
         user: "{{ cron_job_runtime_user | default('root') }}"
         job: "{{ awscli_installed.stdout }} ec2 start-instances --instance-ids {{ ocp_instance_ids.stdout_lines | join(' ') }}"
-        cron_file: restart-ocp-instances-for-vpcid-{{ aws_vpc_id }}
+        cron_file: restart_ocp_instances_for_vpcid_{{ aws_vpc_id | replace('-', '_') }} 
         state: present 
       when:
         - setup_cron_job | bool
