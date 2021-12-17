@@ -1,0 +1,129 @@
+- name: 'Shutdown Cluster  | shutdown-cluster.yml'
+  hosts: localhost
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    module: "shutdown-cluster"
+    ansible_name_module: "Gracefully shutdown cluster | {{ module }}"
+  vars_files:
+    - 'vars/vault.yml'
+    - 'vars/global.yml'
+
+  pre_tasks:
+    - name: '{{ ansible_name_module }} | Validate Cron job variables'
+      when:
+        - setup_cron_job is defined
+        - setup_cron_job | bool 
+      block:
+        - assert:
+            that:
+              - cron_job_runtime_day is defined
+              - cron_job_runtime_day != '' 
+            msg: " the cron_job_runtime_day needs to be defined and valid day of month for cron expression"
+
+        - assert:
+            that:
+              - cron_job_runtime_hour is defined
+              - cron_job_runtime_hour != '' 
+            msg: " the cron_job_runtime_hour needs to be defined and valid hour of day for cron expression"
+
+        - assert:
+            that:
+              - cron_job_runtime_minute is defined
+              - cron_job_runtime_minute != '' 
+            msg: " the cron_job_runtime_minute needs to be defined and valid minute for cron expression"
+
+    - name: '{{ ansible_name_module }} | {{ openshift_cli }} whoami | check if there is valid session'
+      command: >
+        {{ openshift_cli }} whoami
+      ignore_errors: yes
+      register: existing_session
+
+    - name: '{{ ansible_name_module }} | import_tasks | Conditional import of ocp-cluster-login role'
+      import_role:
+        name: ocp-cluster-login
+      when:
+        - existing_session.rc > 0
+
+  tasks:
+    - name: '{{ ansible_name_module }} | Get Certificate Expiration Date '
+      command: >
+        {{ openshift_cli }} get secret kube-apiserver-to-kubelet-signer \
+         -o jsonpath='{.metadata.annotations.auth\.openshift\.io/certificate-not-after}' \
+          -n openshift-kube-apiserver-operator
+      register: cert_expiration_date
+
+    - name: '{{ ansible_name_module }} | Print Certificate Expiration Date '
+      debug:
+        msg: "The Cluster certificate are due to expire on {{ cert_expiration_date.stdout }}. \n Ensure you restart the cluster by then"
+
+    - name: '{{ ansible_name_module }} | Set Tomorrow Date fact'
+      set_fact:
+        tomorrow: "{{ lookup('pipe', ' date -d \"+ 1 days\" +%s') }}"
+
+    - name: '{{ ansible_name_module }} | Set Expiration date epoch fact'
+      set_fact:
+        cert_exp_date_epoch: "{{ lookup('pipe', ' date -d \" {{ cert_expiration_date.stdout }} \"  +%s') }}"
+      when:
+        - cert_expiration_date.rc == 0
+        - cert_expiration_date.stdout is defined
+        - cert_expiration_date.stdout != ''
+
+    - name: '{{ ansible_name_module }} | {{ openshift_cli }} get nodes '
+      command: >
+        {{ openshift_cli }} get nodes -o jsonpath='{.items[*].metadata.name}'
+      ignore_errors: yes
+      register: cluster_nodes
+
+    - name: '{{ ansible_name_module }} | Gracefully Shutdown Cluster Now '
+      when:
+        - not setup_cron_job is defined or ( setup_cron_job is defined and not setup_cron_job | bool)
+      block:
+        - name: '{{ ansible_name_module }} | {{ openshift_cli }} debug node '
+          command: >
+            {{ openshift_cli }} debug node/{{ item }} -- chroot /host shutdown -h 1
+          loop: "{{ cluster_nodes.stdout.split(' ') }}"
+          when:
+            - cluster_nodes.rc is defined
+            - cluster_nodes.rc == 0 
+            - cluster_nodes.stdout_lines is defined
+            - cluster_nodes.stdout_lines | length > 0 
+          register: cluster_shutdown
+
+    - name: '{{ ansible_name_module }} | Create Cron to Shutdown Cluster'
+      when:
+        - setup_cron_job is defined 
+        - setup_cron_job | bool
+      block:
+        - name: '{{ ansible_name_module }} | {{ openshift_cli }} get cluster name'
+          command: >
+            {{ openshift_cli }} get -o jsonpath='{.status.infrastructureName}{"\n"}' infrastructure cluster
+          register: cluster_name 
+
+        - name: '{{ ansible_name_module }} | Build Cron Job command'
+          set_fact:
+            cron_command_list: "{{ cron_command_list | default([]) + [ openshift_cli + ' debug node/' + item  + ' -- chroot /host shutdown -h 1'] }}"
+          loop: "{{ cluster_nodes.stdout.split(' ') }}"
+          when:
+            - cluster_nodes.rc is defined
+            - cluster_nodes.rc == 0 
+            - cluster_nodes.stdout_lines is defined
+            - cluster_nodes.stdout_lines | length > 0 
+          register: cron_command_built
+
+        - name: '{{ ansible_name_module }} | Create Cron to Shutdown Cluster'
+          become: yes
+          cron:
+            name: shutdown-ocp-instances-for-cluster-{{ cluster_name.stdout }}
+            day: "{{ cron_job_runtime_day }}"
+            minute: "{{ cron_job_runtime_minute }}"
+            hour: "{{ cron_job_runtime_hour }}"
+            user: "{{ cron_job_runtime_user | default('root') }}"
+            job: "{{ cron_command_list | join('; ') }}"
+            cron_file: shutdown-ocp-instances-for-cluster-{{ cluster_name.stdout }}
+            state: present 
+          when:
+            - setup_cron_job | bool
+            - cron_command_list is defined
+            - cron_command_list | length > 0 
+          register: ocp_instance_stopped
+
