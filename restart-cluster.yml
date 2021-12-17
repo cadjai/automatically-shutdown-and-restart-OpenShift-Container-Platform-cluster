@@ -1,0 +1,138 @@
+- name: ' Restart Cluster  | restart-cluster.yml'
+  hosts: localhost
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    module: "restart-cluster"
+    ansible_name_module: "Restart cluster after graceful shutdown | {{ module }}"
+  vars_files:
+    - 'vars/vault.yml'
+    - 'vars/global.yml'
+
+  pre_tasks:
+    - name: '{{ ansible_name_module }} | check if awscli is installed'
+      command: >
+        which aws
+      ignore_errors: yes
+      register: awscli_installed 
+
+    - assert:
+        that:
+          - awscli_installed is defined
+          - awscli_installed.rc is defined
+          - awscli_installed.rc == 0 
+          - awscli_installed.stdout is defined
+          - awscli_installed.stdout != '' 
+        msg: " the aws cli need to be installed on this controller "
+
+    - assert:
+        that:
+          - aws_vpc_id is defined
+          - aws_vpc_id != '' 
+        msg: " the aws_vpc_id needs to be defined "
+
+    - assert:
+        that:
+          - aws_rhcos_ami is defined
+          - aws_rhcos_ami != '' 
+        msg: " the aws_rhcos_ami needs to be defined "
+
+    - name: '{{ ansible_name_module }} | Validate Cron job variables'
+      when:
+        - setup_cron_job is defined
+        - setup_cron_job | bool 
+      block:
+        - assert:
+            that:
+              - cron_job_runtime_day is defined
+              - cron_job_runtime_day != '' 
+            msg: " the cron_job_runtime_day needs to be defined and valid day of month for cron expression"
+
+        - assert:
+            that:
+              - cron_job_runtime_hour is defined
+              - cron_job_runtime_hour != '' 
+            msg: " the cron_job_runtime_hour needs to be defined and valid hour of day for cron expression"
+
+        - assert:
+            that:
+              - cron_job_runtime_minute is defined
+              - cron_job_runtime_minute != '' 
+            msg: " the cron_job_runtime_minute needs to be defined and valid minute for cron expression"
+
+  tasks:
+    - name: '{{ ansible_name_module }} | Retrieve AWS Instances'
+      shell: >
+        {{ awscli_installed.stdout }} ec2 describe-instances --filters Name=vpc-id,Values={{ aws_vpc_id | default('vpc-05ee51c18096cec6d') }} Name=image-id,Values={{ aws_rhcos_ami | default('ami-0d5f9982f029fbc14') }} --query 'Reservations[].Instances[].[InstanceId]' --output text 
+      register: ocp_instance_ids
+
+    - name: '{{ ansible_name_module }} | Restart AWS Instances now'
+      when:
+        - not setup_cron_job is defined or ( setup_cron_job is defined and not setup_cron_job | bool)
+      block:
+        - name: '{{ ansible_name_module }} | Restart AWS Instances'
+          shell: >
+            {{ awscli_installed.stdout }} ec2 start-instances --instance-ids {{ ocp_instance_ids.stdout_lines | join(' ') }} 
+          when:
+            - ocp_instance_ids is defined
+            - ocp_instance_ids.stdout_lines is defined
+            - ocp_instance_ids.stdout_lines | length > 0 
+          register: ocp_instance_started
+
+        - name: '{{ ansible_name_module }} | wait_for | wait for machine to be started'
+          wait_for:
+            timeout: 300
+          delegate_to: localhost
+
+        - name: '{{ ansible_name_module }} | {{ openshift_cli }} whoami | check if there is valid session'
+          command: >
+            {{ openshift_cli }} whoami
+          ignore_errors: yes
+          register: existing_session
+
+        - name: '{{ ansible_name_module }} | import_tasks | Conditional import of ocp-cluster-login role'
+          import_role:
+            name: ocp-cluster-login
+          when:
+            - existing_session.rc > 0
+
+        - name: '{{ ansible_name_module }} | Check that the nodes are up'
+          command: >
+            {{ openshift_cli }} get nodes
+          ignore_errors: yes
+          register: node_check 
+
+        - name: '{{ ansible_name_module }} | Check that the control planes are up'
+          command: >
+            {{ openshift_cli }} get nodes -l node-role.kubernetes.io/master 
+          ignore_errors: yes
+          register: control_plane_check 
+
+        - name: '{{ ansible_name_module }} | Check that the compute nodes are up'
+          command: >
+            {{ openshift_cli }} get nodes -l node-role.kubernetes.io/worker 
+          ignore_errors: yes
+          register: worker_nodes_check 
+
+        - name: '{{ ansible_name_module }} | Check that the cluster operators are running'
+          command: >
+            {{ openshift_cli }} get clusteroperators
+          ignore_errors: yes
+          register: co_check 
+
+    - name: '{{ ansible_name_module }} | Create Cron to restart AWS Instances'
+      cron:
+        name: restart-ocp-instances-for-vpcid-{{ aws_vpc_id }}
+        day: "{{ cron_job_runtime_day }}"
+        minute: "{{ cron_job_runtime_minute }}"
+        hour: "{{ cron_job_runtime_hour }}"
+        user: "{{ cron_job_runtime_user | default('root') }}"
+        job: "{{ awscli_installed.stdout }} ec2 start-instances --instance-ids {{ ocp_instance_ids.stdout_lines | join(' ') }}"
+        cron_file: restart-ocp-instances-for-vpcid-{{ aws_vpc_id }}
+        state: present 
+      when:
+        - setup_cron_job | bool
+        - ocp_instance_ids is defined
+        - ocp_instance_ids.stdout_lines is defined
+        - ocp_instance_ids.stdout_lines | length > 0 
+      register: ocp_instance_started
+

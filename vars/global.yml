@@ -1,0 +1,22 @@
+---
+
+openshift_cli: '/usr/bin/oc'
+ocp_cluster_user: '{{ vault_ocp_cluster_user }}'
+ocp_cluster_user_password: '{{ vault_ocp_cluster_user_password }}'
+ocp_cluster_console_url: '{{ vault_ocp_cluster_console_url }}'
+ocp_cluster_console_port: '6443'
+aws_vpc_id: ''
+aws_rhcos_ami: ''
+cluster_shutdown_job_namespace: 'openshift-cluster-shutdown'
+cluster_shutdown_job_namespace_description: '{{ cluster_shutdown_job_namespace }}'
+cluster_shutdown_template_path: 'ocp/'
+cluster_shutdown_service_account: 'cluster-shutdown-sa'
+cluster_shutdown_service_name: 'cluster-shutdown'
+cluster_shutdown_image_registry_repository: 'registry.redhat.io/openshift4'
+cluster_shutdown_image_name: 'ose-tools-rhel8'
+cluster_shutdown_cron_expression: '01 23 * * *'
+
+
+#####################################################################################################
+# End of user configurable variables
+#####################################################################################################
